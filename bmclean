@@ -1,0 +1,80 @@
+#!/usr/bin/python
+from BuildManager.optionparser import *
+from BuildManager.clean import *
+from BuildManager import *
+import logging
+import sys, os
+import pwd
+
+AUTHOR  = "Gustavo Niemeyer <niemeyer@conectiva.com>"
+VERSION = "2.1"
+
+def parse_options():
+    parser = OptionParser("%prog [OPTIONS] <srpm files>", version="%prog " + VERSION)
+    parser.add_option("--remove", action="store_true",
+                      help="remove old packages (default)")
+    parser.add_option("--move", metavar="DIR",
+		              help="move old packages to given directory")
+    parser.add_option("--copy", metavar="DIR",
+		              help="copy old packages to given directory")
+    parser.add_option("--check", metavar="DIR", action="append", default=[],
+		              help="check given directory for newer pkgs, but don't remove files there")
+    parser.add_option("--dryrun", dest="dryrun", action="store_true",
+                      help="do not commit changes to the system")
+    parser.add_option("--log", dest="loglevel", metavar="LEVEL",
+                      help="set logging level to LEVEL (debug, info, warning, error)", default="info")
+    opts, args = parser.parse_args()
+    opts.args = args
+
+    if not opts.args:
+        raise Error, "you must specify one or more files to process"
+
+    actions = 0
+    if opts.remove:
+        actions += 1
+    if opts.copy:
+        actions += 1
+    if opts.move:
+        actions += 1
+
+    if actions > 1:
+        raise Error, "you can't specify more than one action to perform"
+
+    for attr in ["move", "copy", "check"]:
+        attrval = getattr(opts, attr)
+        error = False
+        if type(attrval) is list:
+            for attrval in attrval:
+                if attrval and not os.path.isdir(attrval):
+                    error = True
+                    break
+        else:
+            if attrval and not os.path.isdir(attrval):
+                error = True
+        if error:
+            raise Error, "value of --%s must be a directory" % attr.replace("_", "-")
+
+    return opts
+
+def main():
+    # Get the right $HOME, even when using sudo.
+    if os.getuid() == 0:
+        os.environ["HOME"] = pwd.getpwuid(0)[5]
+    try:
+        opts = parse_options()
+        logger.setLevel(logging.getLevelName(opts.loglevel.upper()))
+        logger.debug("starting bmclean")
+        cleaner = PackageCleaner(opts)
+        status = cleaner.run()
+    except Error, e:
+        logger.error(str(e))
+        logger.debug("finishing bmclean with error")
+        sys.exit(1)
+    else:
+        logger.debug("finishing bmclean")
+        sys.exit(int(not status))
+
+if __name__ == "__main__":
+    main()
+
+# vim:et:ts=4:sw=4

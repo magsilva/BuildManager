@@ -1,0 +1,225 @@
+#!/usr/bin/python
+from BuildManager.optionparser import *
+from BuildManager.build import *
+from BuildManager import *
+import fnmatch
+import logging
+import sys, os
+import pwd
+import re
+
+AUTHOR  = "Gustavo Niemeyer <niemeyer@conectiva.com>"
+VERSION = "2.1"
+
+def passtrough(option, opt, val, parser):
+    opts = parser.values
+    if opt == "--define":
+        assert option.nargs == 1
+        opts.options.insert(0, opt)
+        opts.options.insert(1, "'%s'" % parser.rargs[0].replace("'", r"\'"))
+    else:
+        opts.options.append(opt)
+        for val in parser.rargs[:option.nargs]:
+            opts.options.append("'%s'" % val.replace("'", r"\'"))
+    del parser.rargs[:option.nargs]
+
+def parse_options():
+    parser = OptionParser("%prog [OPTIONS] [<rpm dir>] [<spec file>] [<srpm file>]",
+                          version="%prog " + VERSION)
+    parser.add_option("-a", dest="mode", action="store_const", const="all",
+                      help="do everything and build source and binary packages (default)", default="all")
+    parser.add_option("-u", dest="mode", action="store_const", const="unpack",
+                      help="just unpack")
+    parser.add_option("-p", dest="mode", action="store_const", const="prep",
+                      help="unpack and run %prep stage")
+    parser.add_option("-c", dest="mode", action="store_const", const="compile",
+                      help="unpack, run %prep, and compile")
+    parser.add_option("-i", dest="mode", action="store_const", const="install",
+                      help="unpack, run %prep, compile and install")
+    parser.add_option("-s", dest="mode", action="store_const", const="source",
+                      help="do everything and build source packages")
+    parser.add_option("-b", dest="mode", action="store_const", const="binary",
+                      help="do everything and build binary packages")
+    parser.add_option("-l", dest="show_log", action="store_true",
+                      help="show rpm output, besides copying to the log file")
+    parser.add_option("-j", dest="parallel", metavar="N", type="int", default=1,
+                      help="specify number of packages to build in parallel")
+    parser.add_option("-o", dest="options", action="append",
+                      metavar="OPT", default=[], help="pass given parameters directly to rpm")
+    parser.add_option("--unpack-dir", metavar="DIR", default="/var/tmp",
+                      help="specify directory where to unpack file(s)")
+    parser.add_option("--build-log", metavar="FILE",
+                      help="specify where to put the build log for each package")
+    parser.add_option("--move-srpm", metavar="DIR",
+                      help="move built srpm packages to given directory")
+    parser.add_option("--move-rpm", metavar="DIR",
+                      help="move built rpm packages to given directory")
+    parser.add_option("--move-failed-srpm", metavar="DIR",
+                      help="move original srpm packages to given directory, if failed")
+    parser.add_option("--copy-failed-srpm", metavar="DIR",
+                      help="copy original srpm packages to given directory, if failed")
+    parser.add_option("--remove-failed-srpm", action="store_true",
+                      help="remove original srpm packages, if failed")
+    parser.add_option("--move-succeeded-srpm", metavar="DIR",
+                      help="move original srpm packages to given directory, if succeeded")
+    parser.add_option("--copy-succeeded-srpm", metavar="DIR",
+                      help="copy original srpm packages to given directory, if succeeded")
+    parser.add_option("--remove-succeeded-srpm", action="store_true",
+                      help="remove original srpm packages, if succeeded")
+    parser.add_option("--move-log", metavar="DIR",
+                      help="move log files to given directory")
+    parser.add_option("--move-failed-log", metavar="DIR",
+                      help="move log files to given directory, if failed")
+    parser.add_option("--filter-renew", metavar="DIR", action="append", default=[],
+                      help="don't build packages if a newer version exists in given directory")
+    parser.add_option("--filter-refresh", metavar="DIR", action="append", default=[],
+                      help="only build packages if an older version exists in given directory")
+    parser.add_option("--clean", action="store_true",
+                      help="recursively remove directory used as topdir after the build process")
+    parser.add_option("--clean-on-success", action="store_true",
+                      help="same as --clean, but only remove if build has succeeded")
+    parser.add_option("--ignore", metavar="PKGNAME", action="append", default=[],
+                      help="ignore given package names (shell globbing allowed)")
+
+    parser.add_option("--specs-dir", metavar="DIR", default="SPECS",
+                      help="specify directory for spec files")
+    parser.add_option("--build-dir", metavar="DIR", default="BUILD",
+                      help="specify directory for build files")
+    parser.add_option("--buildroot-dir", metavar="DIR", default="BUILDROOT",
+                      help="specify directory for buildroot files")
+    parser.add_option("--sources-dir", metavar="DIR", default="SOURCES",
+                      help="specify directory for sources files")
+    parser.add_option("--srpms-dir", metavar="DIR", default="SRPMS",
+                      help="specify directory for source RPMs files")
+    parser.add_option("--rpms-dir", metavar="DIR", default="RPMS",
+                      help="specify directory for RPMs files")
+
+    # Passtrough options
+    parser.add_option("--sign", action="callback", nargs=0, callback=passtrough,
+                      help="pass this option to rpm")
+    parser.add_option("--nodeps", action="callback", nargs=0, callback=passtrough,
+                      help="pass this option to rpm")
+    parser.add_option("--debug", action="callback", nargs=0, callback=passtrough,
+                      help="pass this option to rpm")
+    parser.add_option("--short-circuit", action="callback", nargs=0, callback=passtrough,
+                      help="pass this option to rpm")
+    parser.add_option("--with", action="callback", nargs=1, callback=passtrough,
+                      help="pass this option to rpm")
+    parser.add_option("--without", action="callback", nargs=1, callback=passtrough,
+                      help="pass this option to rpm")
+    parser.add_option("--define", action="callback", nargs=1, callback=passtrough,
+                      help="pass this option to rpm")
+    parser.add_option("--target", action="callback", nargs=1, callback=passtrough,
+                      help="pass this option to rpm")
+
+    parser.add_option("--dryrun", dest="dryrun", action="store_true",
+                      help="do not commit changes to the system")
+    parser.add_option("--log", dest="loglevel", metavar="LEVEL",
+                      help="set logging level to LEVEL (debug, info, warning, error)", default="info")
+    opts, args = parser.parse_args()
+    opts.args = args
+
+    opts.rpm_dirs = {}
+    opts.rpm_dirs["specs"] = getattr( opts, "specs_dir" )
+    opts.rpm_dirs["build"] = getattr( opts, "build_dir" )
+    opts.rpm_dirs["buildroot"] = getattr( opts, "buildroot_dir" )
+    opts.rpm_dirs["sources"] = getattr( opts, "sources_dir" )
+    opts.rpm_dirs["srpms"] = getattr( opts, "srpms_dir" )
+    opts.rpm_dirs["rpms"] = getattr( opts, "rpms_dir" )
+
+    # The user hasn't asked for a specific package, search for specfiles within the current dir
+    if not opts.args:
+        # Let's try to find a spec file by ourselves
+        directory = os.getcwd()
+        # We are in the SPECS dir
+        if directory[ -len( opts.rpm_dirs["specs"] ): ] == opts.rpm_dirs["specs"]:
+            directory = "./"
+        # There's a SPECS dir
+        elif os.path.isdir("./" + opts.rpm_dirs["specs"]):
+            directory = "./" + opts.rpm_dirs["specs"]
+        # Search the entire subtree for the SPECS dir
+        else:
+            while directory != "/":
+                directory = os.path.dirname(directory)
+                tmpdir = directory + "/" + opts.rpm_dirs["specs"]
+                if os.path.isdir(tmpdir):
+                    directory = tmpdir
+                    break
+            else:
+                raise Error, "couldn't guess SPECS directory"
+
+        # Read all spec files from SPECS dir
+        filelist = os.listdir(dir)
+        for f in filelist[:]:
+            if f[-len(".spec"):] != ".spec":
+                filelist.remove(f)
+        if len(filelist) != 1:
+            raise Error, "couldn't guess spec file in " + directory
+        opts.args = [os.path.join(dir, filelist[0])]
+
+    else:
+        # Detect directories with a SPECS/ directory inside it
+        for i in range(len(opts.args)):
+            specsdir = os.path.join(opts.args[i] + "/" + opts.rpm_dirs["specs"])
+            if os.path.isdir(specsdir):
+                filelist = os.listdir(specsdir)
+                for f in filelist[:]:
+                    if f[-len(".spec"):] != ".spec":
+                        filelist.remove(f)
+                if len(filelist) != 1:
+                    raise Error, "couldn't guess spec file in " + specsdir
+                opts.args[i] = os.path.join(specsdir, filelist[0])
+
+        opts.filter_renew = [y for x in opts.filter_renew
+                               for y in x.split()]
+        opts.filter_refresh = [y for x in opts.filter_refresh
+                                 for y in x.split()]
+
+    for attr in ["unpack_dir", "move_srpm", "move_rpm",
+                 "move_failed_srpm", "copy_failed_srpm",
+                 "move_succeeded_srpm", "copy_succeeded_srpm",
+                 "move_log", "move_failed_log",
+                 "filter_renew", "filter_refresh"]:
+        attrval = getattr(opts, attr)
+        error = False
+        if type(attrval) is list:
+            for attrval in attrval:
+                if attrval and not os.path.isdir(attrval):
+                    error = True
+                    break
+        else:
+            if attrval and not os.path.isdir(attrval):
+                error = True
+        if error:
+            raise Error, "value of --%s must be a directory" % attr.replace("_", "-")
+     
+    old_ignore = opts.ignore
+    opts.ignore = []
+    for ignore in old_ignore:
+        for item in ignore.split():
+            opts.ignore.append(re.compile(fnmatch.translate(item)))
+
+    return opts
+
+def main():
+    # Get the right $HOME, even when using sudo.
+    if os.getuid() == 0:
+        os.environ["HOME"] = pwd.getpwuid(0)[5]
+    try:
+        opts = parse_options()
+        logger.setLevel(logging.getLevelName(opts.loglevel.upper()))
+        logger.debug("starting bm")
+        builder = PackageBuilder(opts)
+        status = builder.run()
+    except Error, e:
+        logger.error(str(e))
+        logger.debug("finishing bm with error")
+        sys.exit(1)
+    else:
+        logger.debug("finishing bm")
+        sys.exit(int(not status))
+
+if __name__ == "__main__":
+    main()
+
+# vim:et:ts=4:sw=4

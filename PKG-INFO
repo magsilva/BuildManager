@@ -1,0 +1,15 @@
+Metadata-Version: 1.0
+Name: bm
+Version: 2.1
+Summary: BuildManager - rpm package building helper
+Home-page: http://moin.conectiva.com.br/BuildManager
+Author: Gustavo Niemeyer
+Author-email: niemeyer@conectiva.com
+License: GPL
+Description: BuildManager, or bm, is a program that wraps and extends rpm while building
+        packages. Its features allow one to batch process thousand of RPMS at once,
+        controling logs, rpm and srpm moving, filtering the list of files, ignoring
+        given packages, completely cleaning the build directories, and many other
+        features.
+        
+Platform: UNKNOWN

@@ -1,0 +1,2 @@
+recursive-include BuildManager *.py
+include bm bmclean MANIFEST.in LICENSE
