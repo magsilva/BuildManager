@@ -9,7 +9,7 @@ import pwd
 import re
 
 AUTHOR  = "Gustavo Niemeyer <niemeyer@conectiva.com>"
-VERSION = "2.1"
+VERSION = "2.2"
 
 def passtrough(option, opt, val, parser):
     opts = parser.values
